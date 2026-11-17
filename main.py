@@ -17,6 +17,10 @@ Strategy (one cycle, long only, integer math only, fully deterministic):
 - Exit: while holding, it tracks the highest close since the entry. When a
   close falls TRAIL_BPS below that peak, it sells everything and is done:
   one dip, one ride, one exit, no re-entry, no fee bleed from churn.
+- Stop: a dip that keeps falling was never a dip. If a close falls
+  STOP_BPS below the close the entry was decided on, it sells at once
+  instead of riding the position down; the trailing exit never gets a
+  chance to matter on a position that is simply wrong.
 
 Every comparison is integer arithmetic on the bar closes the batch itself
 carries; the bot reads no clock, no file and no environment, so two runs on
@@ -34,6 +38,8 @@ SYMBOL = "CBBTC"
 DIP_BPS = 85
 #: Sell when a close falls this far below the highest close since entry.
 TRAIL_BPS = 85
+#: Sell at once when a close falls this far below the entry's close.
+STOP_BPS = 150
 #: If no dip has triggered by this batch, buy anyway (one trade guaranteed).
 FALLBACK_SEQ = 1200
 #: Reject a fill priced further than this from the close we decided on.
@@ -47,6 +53,7 @@ class DipRider:
     def __init__(self):
         self.ref_close = None  # the first scored close of the window
         self.peak_close = None  # highest close since the entry was decided
+        self.entry_close = None  # the close the entry was decided on
         self.held_once = False  # a position has been seen: the cycle ran
 
     def on_batch(self, state, batch):
@@ -63,6 +70,10 @@ class DipRider:
             self.held_once = True
             if self.peak_close is None or close > self.peak_close:
                 self.peak_close = close
+            # Stop first: a close STOP_BPS under the entry's close means
+            # the dip was a falling knife, not a bounce waiting to happen.
+            if self.entry_close is not None and close * BPS <= self.entry_close * (BPS - STOP_BPS):
+                return [self._sell(state, qty)]
             # Trailing exit: the ride is over once the close gives back
             # TRAIL_BPS from its peak; sell the whole position.
             if close * BPS <= self.peak_close * (BPS - TRAIL_BPS):
@@ -74,6 +85,7 @@ class DipRider:
         # Flat and never held: look for the dip, else take the fallback.
         if close * BPS <= self.ref_close * (BPS - DIP_BPS) or state.seq >= FALLBACK_SEQ:
             self.peak_close = close
+            self.entry_close = close
             return [self._buy(state)]
         return []
 
